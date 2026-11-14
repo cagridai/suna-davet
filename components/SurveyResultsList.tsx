@@ -17,7 +17,20 @@ function formatTurkishDate(isoDate: string): string {
 
 export async function SurveyResultsList() {
   await connection();
-  const entries = await readSurveys();
+  const { entries, error } = await readSurveys();
+
+  if (error) {
+    return (
+      <div className="rounded-3xl border border-[#fecaca] bg-[#fef2f2] p-8 text-center">
+        <h2 className="font-serif text-2xl font-bold text-[#991b1b]">
+          Sonuçlar şu an yüklenemiyor
+        </h2>
+        <p className="mt-2 text-sm text-[#7f1d1d]">
+          Supabase bağlantısı veya <code className="font-mono">surveys</code> tablosu henüz hazır değil ({error}).
+        </p>
+      </div>
+    );
+  }
 
   if (entries.length === 0) {
     return (

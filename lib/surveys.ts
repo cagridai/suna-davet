@@ -1,109 +1,83 @@
-import { promises as fs } from "node:fs";
-import path from "node:path";
-import type { SurveyEntry } from "@/lib/validation";
+import { createClient, getSupabaseConfig } from "@/lib/supabase/server";
+import { isSlugAnswer, type SurveyEntry } from "@/lib/validation";
 
-const SEED_SURVEYS: SurveyEntry[] = [
-  {
-    id: "seed-1",
-    fullName: "Kardiyomiyosit Hayranı",
-    loveScore: 10,
-    slugAnswer: "Seni sevmemek mümkün mü?",
-    outfitAdvice:
-      "Bembeyaz ütülü laboratuvar önlüğü altına parlak neon spor ayakkabı giy, jüri dikkatini dağıtsın.",
-    createdAt: "2026-11-10T10:15:00.000Z",
-  },
-  {
-    id: "seed-2",
-    fullName: "Apomorfin Reseptörü",
-    loveScore: 10,
-    slugAnswer: "Tabii ki",
-    outfitAdvice:
-      "Tam takım elbise üstüne 'p < 0.05' rozeti tak. Sol ventrikülün bile gurur duyar.",
-    createdAt: "2026-11-11T14:30:00.000Z",
-  },
-  {
-    id: "seed-3",
-    fullName: "Suna'nın Kahve Makinesi",
-    loveScore: 10,
-    slugAnswer: "Evet",
-    outfitAdvice:
-      "Üzerinde 'Bana zor soru sorana kafein yok' yazan şık bir blazer ceket mutlaka olmalı.",
-    createdAt: "2026-11-12T18:45:00.000Z",
-  },
-];
-
-const PRIMARY_PATH = path.join(process.cwd(), "data", "surveys.json");
-const FALLBACK_PATH = "/tmp/suna-savunma-surveys.json";
-
-let writeQueue: Promise<unknown> = Promise.resolve();
-
-async function resolveReadablePath(): Promise<string | null> {
-  for (const candidate of [PRIMARY_PATH, FALLBACK_PATH]) {
-    try {
-      await fs.access(candidate);
-      return candidate;
-    } catch {
-      // try next path
-    }
-  }
-  return null;
+interface SurveyRow {
+  id: string;
+  full_name: string;
+  love_score: number;
+  slug_answer: string;
+  outfit_advice: string;
+  created_at: string;
 }
 
-async function writeAtomic(filePath: string, data: SurveyEntry[]): Promise<void> {
-  const dir = path.dirname(filePath);
-  await fs.mkdir(dir, { recursive: true });
-  const tempPath = `${filePath}.${Date.now()}.tmp`;
-  await fs.writeFile(tempPath, JSON.stringify(data, null, 2), "utf8");
-  await fs.rename(tempPath, filePath);
+function mapRow(row: SurveyRow): SurveyEntry {
+  return {
+    id: row.id,
+    fullName: row.full_name,
+    loveScore: 10,
+    slugAnswer: isSlugAnswer(row.slug_answer) ? row.slug_answer : "Evet",
+    outfitAdvice: row.outfit_advice,
+    createdAt: row.created_at,
+  };
 }
 
-async function writeSurveys(data: SurveyEntry[]): Promise<void> {
-  try {
-    await writeAtomic(PRIMARY_PATH, data);
-  } catch {
-    await writeAtomic(FALLBACK_PATH, data);
-  }
+function hasSupabaseConfig(): boolean {
+  const { url, key } = getSupabaseConfig();
+  return Boolean(url && key);
 }
 
-export async function readSurveys(): Promise<SurveyEntry[]> {
-  const existingPath = await resolveReadablePath();
-  if (!existingPath) {
-    try {
-      await writeSurveys(SEED_SURVEYS);
-    } catch {
-      // ignore if read-only in static env
-    }
-    return [...SEED_SURVEYS];
+export async function readSurveys(): Promise<{
+  entries: SurveyEntry[];
+  error?: string;
+}> {
+  if (!hasSupabaseConfig()) {
+    return {
+      entries: [],
+      error: "Supabase ortam değişkenleri eksik.",
+    };
   }
 
-  try {
-    const raw = await fs.readFile(/*turbopackIgnore: true*/ existingPath, "utf8");
-    const parsed = JSON.parse(raw);
-    if (Array.isArray(parsed)) {
-      return parsed as SurveyEntry[];
-    }
-  } catch {
-    // fallback to seeds if corrupted
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("surveys")
+    .select("id, full_name, love_score, slug_answer, outfit_advice, created_at")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    return {
+      entries: [],
+      error: error.message,
+    };
   }
-  return [...SEED_SURVEYS];
+
+  const rows = (data ?? []) as SurveyRow[];
+  return {
+    entries: rows.map(mapRow),
+  };
 }
 
 export async function appendSurvey(
   entry: Omit<SurveyEntry, "id" | "createdAt">
 ): Promise<SurveyEntry> {
-  const created: SurveyEntry = {
-    ...entry,
-    id: crypto.randomUUID(),
-    createdAt: new Date().toISOString(),
-  };
+  if (!hasSupabaseConfig()) {
+    throw new Error("Supabase ortam değişkenleri eksik.");
+  }
 
-  const run = writeQueue.then(async () => {
-    const current = await readSurveys();
-    const updated = [created, ...current];
-    await writeSurveys(updated);
-    return created;
-  });
+  const supabase = await createClient();
+  const { data, error } = await supabase
+    .from("surveys")
+    .insert({
+      full_name: entry.fullName,
+      love_score: entry.loveScore,
+      slug_answer: entry.slugAnswer,
+      outfit_advice: entry.outfitAdvice,
+    })
+    .select("id, full_name, love_score, slug_answer, outfit_advice, created_at")
+    .single();
 
-  writeQueue = run.catch(() => undefined);
-  return run;
+  if (error || !data) {
+    throw new Error(error?.message ?? "Anket yanıtı veritabanına kaydedilemedi.");
+  }
+
+  return mapRow(data as SurveyRow);
 }

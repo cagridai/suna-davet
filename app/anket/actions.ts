@@ -43,7 +43,16 @@ export async function submitSurveyAction(
     };
   }
 
-  await appendSurvey(validation.cleaned);
+  try {
+    await appendSurvey(validation.cleaned);
+  } catch (err) {
+    const reason = err instanceof Error ? err.message : "Bilinmeyen veritabanı hatası";
+    return {
+      status: "error",
+      message: `Kayıt sırasında Supabase hatası oluştu: ${reason}`,
+    };
+  }
+
   revalidatePath("/sonuclar");
 
   return {
